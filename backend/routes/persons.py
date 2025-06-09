@@ -6,30 +6,51 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from models   import Person, Face
+from models   import Person, Face, Embedding
 from db       import get_session
 from security import current_user, User
+from utils    import get_embedding
+import numpy as np
 
 router = APIRouter(prefix="/persons", tags=["persons"])
 
+
+# Esquemas Pydantic
 class PersonCreate(BaseModel):
     name: str
 
-class ExportMeta(BaseModel):
-    persons: List[dict]  # cada dict: { name: str, images: List[str] }
 
-# Crear persona
+class ExportMeta(BaseModel):
+    persons: List[dict]  # { name: str, images: List[str] }
+
+
+# Utilidad: Buscar el siguiente nombre libre (Paula, Paula1, Paula2...)
+async def next_free_name(db: AsyncSession, user_id: int, base: str) -> str:
+    idx, name = 0, base
+    while True:
+        row = await db.execute(
+            select(Person).where(Person.user_id == user_id, Person.name == name)
+        )
+        if not row.scalars().first():
+            return name
+        idx += 1
+        name = f"{base}{idx}"
+
+
+# Crear persona vía API
 @router.post("/")
 async def create_person(
     data: PersonCreate = Body(...),
     user: User         = Depends(current_user),
     db:   AsyncSession = Depends(get_session),
 ):
-    person = Person(name=data.name, user_id=user.id)
+    free = await next_free_name(db, user.id, data.name)
+    person = Person(name=free, user_id=user.id)
     db.add(person)
     await db.commit()
     await db.refresh(person)
     return {"id": person.id, "name": person.name}
+
 
 # Listar personas
 @router.get("/")
@@ -40,16 +61,16 @@ async def list_persons(
     rows = await db.execute(select(Person).where(Person.user_id == user.id))
     return [dict(id=p.id, name=p.name) for p, in rows]
 
-# Exportar ZIP
+
+# Exportar base en formato FROST 1.0
 @router.get("/export-zip")
 async def export_zip(
     user: User         = Depends(current_user),
     db:   AsyncSession = Depends(get_session),
 ):
-    buf = io.BytesIO()
+    buf  = io.BytesIO()
     meta = {"persons": []}
 
-    # Traer todas las personas
     result = await db.execute(select(Person).where(Person.user_id == user.id))
     persons = [p for p, in result]
 
@@ -58,18 +79,13 @@ async def export_zip(
             pmeta = {"name": person.name, "images": []}
             faces = await db.execute(select(Face).where(Face.person_id == person.id))
             for f, in faces:
-                img_path = f.image_path
-                if os.path.isfile(img_path):
-                    arc = f"{person.name}/{os.path.basename(img_path)}"
-                    z.write(img_path, arcname=arc)
+                if os.path.isfile(f.image_path):
+                    arc = f"{person.name}/{os.path.basename(f.image_path)}"
+                    z.write(f.image_path, arcname=arc)
                     pmeta["images"].append(arc)
             meta["persons"].append(pmeta)
 
-        # ensure_ascii=False para que las tildes sean reales
-        z.writestr(
-            "export.json",
-            json.dumps(meta, ensure_ascii=False)
-        )
+        z.writestr("export.json", json.dumps(meta, ensure_ascii=False))
 
     buf.seek(0)
     return StreamingResponse(
@@ -78,7 +94,8 @@ async def export_zip(
         headers={"Content-Disposition": "attachment; filename=persons_export.zip"},
     )
 
-# Importar ZIP
+
+# Importar ZIP y generar embeddings
 @router.post("/import-zip")
 async def import_zip(
     file: UploadFile = File(...),
@@ -87,30 +104,56 @@ async def import_zip(
 ):
     content = await file.read()
     buf = io.BytesIO(content)
+
     with zipfile.ZipFile(buf) as z:
-        meta = json.loads(z.read("export.json"))
-        imported = []
+        meta      = json.loads(z.read("export.json"))
+        imported  = []
+
         for p in meta["persons"]:
-            # Crear persona
-            person = Person(name=p["name"], user_id=user.id)
+            # Nombre único por usuario
+            free_name = await next_free_name(db, user.id, p["name"])
+
+            person = Person(name=free_name, user_id=user.id)
             db.add(person)
-            await db.flush()  # Para tener person.id
-            # Guardar cada imagen
+            await db.flush()
+
             for arc in p["images"]:
                 data = z.read(arc)
-                save_dir = "/tmp"
-                os.makedirs(save_dir, exist_ok=True)
-                dest = os.path.join(save_dir, os.path.basename(arc))
+
+                # Guardar imagen en /tmp
+                os.makedirs("/tmp", exist_ok=True)
+                dest = os.path.join("/tmp", os.path.basename(arc))
                 with open(dest, "wb") as f_out:
                     f_out.write(data)
+
+                # Crear registro Face
                 face = Face(person_id=person.id, image_path=dest)
                 db.add(face)
-            imported.append(p["name"])
+                await db.flush()
+
+                # 3) Generar embedding
+                try:
+                    vec = get_embedding(io.BytesIO(data))
+                    db.add(
+                        Embedding(
+                            face_id=face.id,
+                            vector=vec.tobytes(),
+                            model="dlib",
+                            version="1.0",
+                        )
+                    )
+                except ValueError:
+                    # Imagen sin rostro válido
+                    pass
+
+            imported.append(free_name)
+
         await db.commit()
 
     return {"imported": imported}
 
-# Rostros de persona
+
+# Listar rostros de una persona
 @router.get("/{person_id}/faces")
 async def list_faces(
     person_id: int,
@@ -123,13 +166,12 @@ async def list_faces(
 
     rows = await db.execute(select(Face).where(Face.person_id == person_id))
     return [
-        dict(
-            id=f.id,
-            name=f.image_path.split("/")[-1],
-            created=f.created_at.isoformat(),
-        )
+        dict(id=f.id,
+             name=os.path.basename(f.image_path),
+             created=f.created_at.isoformat())
         for f, in rows
     ]
+
 
 # Eliminar persona
 @router.delete("/{person_id}")
