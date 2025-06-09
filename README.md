@@ -4,7 +4,7 @@ A self‑hosted, **open‑source** web application that lets individuals and org
 Built with **FastAPI**, **React 18**, **PostgreSQL** and the Python **face_recognition** library.
 
 
-## Features
+## Features
 
 * Multi‑user management — each account has its own isolated face database.
 * Register faces from file or live webcam, embeddings generated on‑the‑fly.
@@ -19,14 +19,14 @@ Built with **FastAPI**, **React 18**, **PostgreSQL** and the Python **face_reco
 * REST API documented with the built‑in `/docs` (Swagger UI).
 
 
-## Prerequisites
+## Prerequisites
 
 * Docker 20.10+ and Docker Compose v2
 * At least 2 GB RAM (CPU only).  
   Optional: Nvidia GPU + CUDA for faster inference.
 
 
-## Quick Start
+## Quick Start
 
 ```bash
 git clone https://github.com/your‑org/open‑facial‑rec.git
@@ -43,7 +43,7 @@ Visit:
 Log in with one of the demo accounts or create a new user from the UI.
 
 
-## Environment Variables (`.env`)
+## Environment Variables (`.env`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -54,7 +54,7 @@ Log in with one of the demo accounts or create a new user from the UI.
 | `VITE_API_URL` | `http://localhost:8000` | URL that the SPA calls |
 
 
-## File Structure
+## File Structure
 
 ```
 backend/
@@ -96,7 +96,7 @@ README.md
 ```
 
 
-## Main API Endpoints
+## Main API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -111,7 +111,7 @@ README.md
 Full interactive docs at `/docs`.
 
 
-## Upgrading
+## Upgrading
 
 ```bash
 git pull
@@ -122,7 +122,7 @@ docker-compose up -d --build
 Database migrations are automatic. Embeddings are regenerated on import to stay forward‑compatible with new models.
 
 
-## License
+## License
 
 [MIT](LICENSE)
 
